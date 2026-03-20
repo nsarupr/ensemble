@@ -27,13 +27,23 @@ You: "Review the auth module for security issues"
   claude-2: Confirmed. Also found unvalidated user input in AuthHandler.swift...
 ```
 
+## Use with Claude Code
+
+Ensemble ships with a `/collab` skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Just type:
+
+```
+/collab "Review the auth module for security issues"
+```
+
+Claude spawns a team, shows the agent conversation live, and presents results when they're done. See [Configuration → Claude Code integration](configuration#claude-code-integration) for setup.
+
 ## Quick links
 
 - [Getting Started](getting-started) — Install & run your first team
-- [Configuration](configuration) — Environment variables, agents, hosts
+- [Configuration](configuration) — Environment variables, agents, hosts, **Claude Code setup**
 - [API Reference](api) — HTTP endpoints
 - [CLI Reference](cli) — Command line usage
-- [Collab Scripts](collab-scripts) — Shell scripts for Claude Code integration
+- [Collab Scripts](collab-scripts) — Shell scripts for automation
 - [Architecture](architecture) — How it all fits together
 
 ---

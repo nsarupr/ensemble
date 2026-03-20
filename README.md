@@ -74,6 +74,16 @@ Or use the all-in-one collab script:
 ./scripts/collab-launch.sh "$(pwd)" "Review the authentication module"
 ```
 
+## Claude Code: `/collab` command
+
+Ensemble ships with a skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Once installed, just type:
+
+```
+/collab "Review the auth module for security issues"
+```
+
+Claude spawns a Codex + Claude team, shows their conversation live in your terminal, and presents a summary when done. Setup takes 2 minutes — see the [Claude Code integration guide](https://michelhelsdingen.github.io/ensemble/configuration#claude-code-integration).
+
 ## How It Works
 
 1. **Create a team** — Define agents and their task via API or CLI

@@ -171,7 +171,27 @@ Notifications include: team name, duration, message count, and a brief summary.
 
 ## Claude Code integration
 
-To use ensemble from Claude Code, add to `~/.claude/settings.json`:
+Ensemble integrates with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) as a `/collab` slash command. This lets you type `/collab "review the auth module"` and Claude will spawn a Codex + Claude team, monitor their conversation, and present results — all without leaving your terminal.
+
+### Step 1: Install the skill
+
+Create the skill directory and file:
+
+```bash
+mkdir -p ~/.claude/skills/collab
+```
+
+Then create `~/.claude/skills/collab/SKILL.md` with the skill definition. You can copy it from the repo:
+
+```bash
+cp /path/to/ensemble/skill/SKILL.md ~/.claude/skills/collab/SKILL.md
+```
+
+Or create it manually — see the [skill template](https://github.com/michelhelsdingen/ensemble/blob/main/skill/SKILL.md) in the repo.
+
+### Step 2: Add permissions
+
+Add to `~/.claude/settings.json` so Claude Code can run ensemble scripts without confirmation prompts:
 
 ```json
 {
@@ -185,7 +205,33 @@ To use ensemble from Claude Code, add to `~/.claude/settings.json`:
 }
 ```
 
-This allows Claude Code to launch and monitor collab teams without permission prompts.
+Replace `/path/to/ensemble` with the actual path where you cloned the repo.
+
+### Step 3: Use it
+
+In any Claude Code session:
+
+```
+/collab "Review the authentication module for security issues"
+```
+
+Claude Code will:
+1. Start the ensemble server (if not running)
+2. Spawn a Codex + Claude team
+3. Show the agent conversation inline as it happens
+4. Present a summary when the team finishes
+
+You can also say things like "werk samen met Codex" or "start a collab team" — Claude Code recognizes these as triggers for the collab skill.
+
+### How it works
+
+The `/collab` skill tells Claude Code to:
+1. Run `collab-launch.sh` to create the team
+2. Poll `collab-poll.sh` for new messages every 15-30 seconds
+3. Present each agent's messages as formatted dialogue
+4. Clean up when the team finishes or is disbanded
+
+In tmux, the TUI monitor opens in a split pane. Without tmux, messages are polled and displayed inline.
 
 ---
 

@@ -1,0 +1,103 @@
+---
+name: collab
+description: Start a collaborative AI team (Codex + Claude) to work on a task together. Use when the user says "werk samen met Codex", "collab", "team onderzoek", "laat Codex en Claude samenwerken", or wants multiple AI agents to analyze, research, or solve something together autonomously.
+allowed-tools: Bash, Read, Write, Agent, TaskOutput
+metadata:
+  author: michel
+  version: 6.0.0
+---
+
+# Collab: Autonomous AI Team Collaboration
+
+Launch a Codex + Claude team. Scripts live in `~/Documents/ensemble/scripts/`. Runtime files namespaced under `/tmp/ensemble/<TEAM_ID>/`.
+
+## Path Convention
+All collab artifacts live in `/tmp/ensemble/<TEAM_ID>/`:
+- `messages.jsonl` — agent + ensemble message log
+- `summary.txt` — written on disband by ensemble-service
+- `bridge.pid`, `bridge.log` — bridge process
+- `poller.pid`, `feed.txt` — background poller
+- `prompts/`, `delivery/` — agent prompt/delivery files
+- `.finished` — written by ensemble-service AFTER summary.txt
+- `team-id` — team ID marker
+
+## Workflow
+
+### Step 0: Detect environment
+```bash
+if [ -n "$TMUX" ]; then echo "TMUX_YES"; else echo "TMUX_NO"; fi
+```
+
+### Step 1: Launch the team
+```bash
+~/Documents/ensemble/scripts/collab-launch.sh "$(pwd)" "$TASK_DESCRIPTION"
+```
+
+Extract TEAM_ID:
+```bash
+TEAM_ID=$(cat /tmp/collab-team-id.txt)
+```
+
+### Step 2: Tell the user where the monitor is
+
+If `TMUX_YES`: "Team is live in het rechter tmux-paneel."
+If `TMUX_NO`: "`tmux attach -t ensemble-$TEAM_ID` — live TUI monitor (steer, disband, scroll)"
+
+### Step 3: Monitoring — the user MUST see the conversation
+
+**CRITICAL RULE**: The user wants to SEE the team's conversation as it happens. Every poll result must be presented clearly and formatted as a readable conversation. Do NOT just dump raw output — format it as a proper dialogue.
+
+#### If `TMUX_NO`: poll and PRESENT messages inline
+
+Use `collab-poll.sh` — a single-shot poller that tracks state automatically and gives clean output.
+
+**Poll command:**
+```bash
+~/Documents/ensemble/scripts/collab-poll.sh "<TEAM_ID>" --sleep <seconds>
+```
+
+Output format: `sender\tcontent` lines, ending with one of:
+- `---STATUS:ACTIVE` — new messages were found
+- `---STATUS:QUIET` — no new messages (agents in deep work)
+- `---STATUS:DONE` — team finished, followed by summary.txt content
+- `---STATUS:WAITING` — messages file not yet created
+
+**Presentation rules — THIS IS THE KEY PART:**
+After each poll, present the new messages to the user like this:
+
+> **codex-1**: [message content]
+>
+> **claude-2**: [message content]
+
+Use markdown bold for agent names. Show the FULL message content (up to 500 chars), not truncated summaries. Between polls, add a brief status line like "Team is aan het werk... volgende check over 15s."
+
+**Polling cadence:**
+- First poll: `--sleep 10`
+- Normal: `--sleep 15` to `--sleep 20`
+- If 3+ polls QUIET: `--sleep 30` (agents in deep work)
+- On `---STATUS:DONE`: stop polling, present final summary
+
+**When done**, present structured summary + clean up:
+```bash
+TEAM_ID="<id>" && RD="/tmp/ensemble/$TEAM_ID" && kill "$(cat "$RD/poller.pid" 2>/dev/null)" 2>/dev/null || true; kill "$(cat "$RD/bridge.pid" 2>/dev/null)" 2>/dev/null || true; tmux kill-session -t "ensemble-$TEAM_ID" 2>/dev/null || true
+```
+
+#### If `TMUX_YES`: background summary watcher
+
+Monitor visible in right pane. Wait in background:
+```bash
+TEAM_ID="<id>" && RD="/tmp/ensemble/$TEAM_ID" && while [ ! -f "$RD/.finished" ] && [ ! -f "$RD/summary.txt" ]; do sleep 8; done && echo "COLLAB_COMPLETE" && cat "$RD/summary.txt" 2>/dev/null
+```
+Run with `run_in_background: true`, `timeout: 600000`.
+
+When done: summarize + cleanup poller/bridge PIDs.
+
+## Important Notes
+- Agents run with auto-accept permissions (configured in agents.json: codex `--full-auto`, claude `--dangerously-skip-permissions`). They should NEVER ask for file write approval.
+- Do not modify project code during a collab session unless the user explicitly asks
+- Do not truncate or remove `messages.jsonl`
+- Multiple collabs can run simultaneously — each has own `/tmp/ensemble/<TEAM_ID>/` namespace
+- `team-say.sh` uses `fcntl.flock` for atomic JSONL writes
+- `ensemble-bridge.sh` has single-instance guard, health check, exponential backoff
+- `.finished` and `summary.txt` are written by ensemble-service, NOT by scripts
+- Bridge auto-stops when it sees `.finished` marker
