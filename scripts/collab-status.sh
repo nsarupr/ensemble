@@ -185,43 +185,7 @@ collect_last_activity() {
 
 message_meta() {
   local messages_file="${1:?messages file required}"
-  python3 - "$messages_file" <<'PY'
-import json
-import sys
-
-path = sys.argv[1]
-count = 0
-first_ts = ""
-last_ts = ""
-last_content = ""
-
-try:
-    with open(path, "r", encoding="utf-8") as handle:
-        for raw in handle:
-            line = raw.strip()
-            if not line:
-                continue
-            try:
-                msg = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            count += 1
-            ts = msg.get("timestamp") or ""
-            if not first_ts and ts:
-                first_ts = ts
-            if ts:
-                last_ts = ts
-            content = str(msg.get("content", "")).replace("\n", " ").replace("\t", " ").strip()
-            if content:
-                last_content = " ".join(content.split())
-except FileNotFoundError:
-    pass
-
-print(count)
-print(first_ts)
-print(last_ts)
-print(last_content)
-PY
+  python3 "$SCRIPT_DIR/parse-messages.py" "$messages_file" --meta-only --include-orchestra
 }
 
 render_snapshot() {

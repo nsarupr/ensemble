@@ -53,35 +53,10 @@ if [ -f "$SEEN_FILE" ]; then
   [[ "${RAW:-}" =~ ^[0-9]+$ ]] && SEEN="$RAW"
 fi
 
-# Shared Python parser — extracts new messages as "sender\tcontent" lines.
-# Filters out orchestra messages. Consistent with collab-livefeed.sh.
+# Shared message parser — extracts new messages as "sender\tcontent" lines.
 print_new_messages() {
   local file="$1" skip="$2"
-  python3 - "$file" "$skip" <<'PY'
-import json, sys, re
-
-path, skip = sys.argv[1], int(sys.argv[2])
-try:
-    with open(path, "r") as f:
-        lines = f.readlines()[skip:]
-except FileNotFoundError:
-    lines = []
-
-for raw in lines:
-    line = raw.strip()
-    if not line:
-        continue
-    try:
-        msg = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-    sender = msg.get("from", "")
-    if sender == "orchestra":
-        continue
-    content = re.sub(r'/tmp/orchestra[-\w]*/', '', str(msg.get("content", ""))).strip()[:500]
-    if content:
-        print(f"{sender}\t{content}")
-PY
+  python3 "$SCRIPT_DIR/parse-messages.py" "$file" --skip "$skip" --max-content 500
 }
 
 # Get current line count (with truncation detection)

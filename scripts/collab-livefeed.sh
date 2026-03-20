@@ -35,33 +35,7 @@ trap cleanup EXIT INT TERM
 
 print_new_messages() {
   local file="$1" skip="$2"
-  python3 - "$file" "$skip" <<'PY'
-import json
-import sys
-
-file_path = sys.argv[1]
-skip = int(sys.argv[2])
-
-try:
-    with open(file_path, "r", encoding="utf-8") as handle:
-        lines = handle.readlines()[skip:]
-except FileNotFoundError:
-    lines = []
-
-for raw in lines:
-    line = raw.strip()
-    if not line:
-        continue
-    try:
-        msg = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-    sender = msg.get("from", "?")
-    if sender == "orchestra":
-        continue
-    content = __import__('re').sub(r'/tmp/orchestra[-\w]*/', '', str(msg.get("content", ""))).strip()[:200]
-    print(f"{sender}\t{content}")
-PY
+  python3 "$SCRIPT_DIR/parse-messages.py" "$file" --skip "$skip" --max-content 200
 }
 
 while true; do
