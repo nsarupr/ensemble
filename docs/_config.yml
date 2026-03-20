@@ -1,0 +1,16 @@
+title: Ensemble
+description: Multi-agent collaboration engine — AI agents that work as one
+remote_theme: pages-themes/minimal@v0.2.0
+plugins:
+  - jekyll-remote-theme
+
+baseurl: /ensemble
+url: https://michelhelsdingen.github.io
+
+show_downloads: false
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
