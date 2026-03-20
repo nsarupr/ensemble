@@ -104,6 +104,8 @@ curl -X POST http://127.0.0.1:23000/api/ensemble/teams/abc-123 \
 - `to` (string) — recipient agent name; defaults to `"team"` when omitted or empty
 - `from` (string) — sender name (default: `"user"`)
 
+**Response:** `{ "message": EnsembleMessage }`
+
 Returns `400` for malformed JSON.
 
 ---
