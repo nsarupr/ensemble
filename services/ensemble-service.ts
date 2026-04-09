@@ -34,6 +34,32 @@ import { runStagedWorkflow } from '../lib/staged-workflow'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
+const PORT = parseInt(process.env.ENSEMBLE_PORT || '23000', 10)
+const activeBridges = new Map<string, ReturnType<typeof spawn>>()
+
+/** Start bridge process for a team — routes file-based team-say to HTTP API */
+function startBridge(teamId: string) {
+  if (activeBridges.has(teamId)) return
+
+  const bridgeScript = path.join(__dirname, '..', 'scripts', 'ensemble-bridge.sh')
+  const runtimeDir = `/tmp/ensemble/${teamId}`
+  const logFile = `${runtimeDir}/bridge.log`
+
+  try {
+    fs.mkdirSync(runtimeDir, { recursive: true })
+    const logFd = fs.openSync(logFile, 'a')
+    const proc = spawn('bash', [bridgeScript, teamId, `http://localhost:${PORT}`], {
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+    })
+    proc.unref()
+    activeBridges.set(teamId, proc)
+    console.log(`[Ensemble] Bridge started for team ${teamId} (PID: ${proc.pid})`)
+  } catch (err) {
+    console.error(`[Ensemble] Failed to start bridge for team ${teamId}:`, err)
+  }
+}
+
 interface ServiceResult<T> {
   data?: T
   error?: string
@@ -653,6 +679,9 @@ export async function createEnsembleTeam(
     }
   }
 
+  // Start the bridge process — routes file-based team-say messages to the HTTP API
+  startBridge(team.id)
+
   return { data: { team }, status: 201 }
 }
 
@@ -786,6 +815,14 @@ export async function writeDisbandSummary(teamId: string): Promise<void> {
 export async function disbandTeam(teamId: string): Promise<ServiceResult<{ team: EnsembleTeam }>> {
   const team = getTeam(teamId)
   if (!team) return { error: 'Team not found', status: 404 }
+
+  // Stop bridge process
+  const bridge = activeBridges.get(teamId)
+  if (bridge) {
+    try { bridge.kill() } catch { /* already dead */ }
+    activeBridges.delete(teamId)
+    console.log(`[Ensemble] Bridge stopped for team ${teamId}`)
+  }
 
   // Write summary before killing sessions so the Claude Code session can present it
   await writeDisbandSummary(teamId)
