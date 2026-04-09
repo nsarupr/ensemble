@@ -170,6 +170,11 @@ class Monitor {
   private inputMode = false
   private inputBuffer = ''
   private inputTarget = 'team'
+  private proxyMode = false
+  private proxySelectingAgent = false
+  private proxyTarget = ''
+  private proxySessionName = ''
+  private lastEscAt = 0
   private pollInterval: ReturnType<typeof setInterval> | null = null
   private cols = process.stdout.columns || 120
   private rows = process.stdout.rows || 40
@@ -308,6 +313,68 @@ class Monitor {
       return
     }
 
+    // Raw proxy mode — selecting agent
+    if (this.proxySelectingAgent) {
+      const idx = parseInt(key) - 1
+      if (this.team?.agents && idx >= 0 && idx < this.team.agents.length) {
+        const agent = this.team.agents[idx]
+        this.proxySelectingAgent = false
+        this.proxyMode = true
+        this.proxyTarget = agent.name
+        this.proxySessionName = `${this.team.name}-${agent.name}`
+        this.lastEscAt = 0
+        this.startProxyPoll()
+        this.render()
+      } else if (key === '\x1b') {
+        this.proxySelectingAgent = false
+        this.render()
+      }
+      return
+    }
+
+    // Raw proxy mode — forwarding keystrokes to agent tmux session
+    if (this.proxyMode) {
+      if (key === '\x1b') {
+        const now = Date.now()
+        if (now - this.lastEscAt < 500) {
+          // Double-Esc — exit proxy mode
+          this.proxyMode = false
+          this.proxyTarget = ''
+          this.proxySessionName = ''
+          this.lastEscAt = 0
+          this.stopProxyPoll()
+          this.render()
+          return
+        }
+        this.lastEscAt = now
+        // Forward single Esc to agent
+        this.sendRawKeys('Escape')
+        return
+      }
+      this.lastEscAt = 0
+
+      // Map keys to tmux send-keys format
+      if (key === '\r' || key === '\n') {
+        this.sendRawKeys('Enter')
+      } else if (key === '\x1b[A') {
+        this.sendRawKeys('Up')
+      } else if (key === '\x1b[B') {
+        this.sendRawKeys('Down')
+      } else if (key === '\x1b[C') {
+        this.sendRawKeys('Right')
+      } else if (key === '\x1b[D') {
+        this.sendRawKeys('Left')
+      } else if (key === '\x7f') {
+        this.sendRawKeys('BSpace')
+      } else if (key === '\t') {
+        this.sendRawKeys('Tab')
+      } else if (key.charCodeAt(0) >= 32) {
+        // Printable character — send literally
+        this.sendRawKeys(key, true)
+      }
+      return
+    }
+
     if (this.inputMode) {
       if (key === '\x1b') {
         // Escape — cancel input
@@ -334,6 +401,13 @@ class Monitor {
     }
 
     switch (key) {
+      case '!':
+        // Enter raw proxy mode — select agent first
+        if (this.team?.agents && this.team.agents.length > 0) {
+          this.proxySelectingAgent = true
+          this.render()
+        }
+        break
       case 's': case 'S':
         // Start input mode — send to team
         this.inputMode = true
@@ -369,6 +443,55 @@ class Monitor {
         // Disband team
         this.disbandTeam()
         break
+    }
+  }
+
+  private proxyPaneCache = ''
+  private proxyPollTimer: ReturnType<typeof setInterval> | null = null
+
+  private captureProxyPane(): string {
+    if (!this.proxySessionName) return ''
+    try {
+      const { execSync } = require('child_process') as typeof import('child_process')
+      const escaped = this.proxySessionName.replace(/"/g, '\\"')
+      const output = execSync(`tmux capture-pane -t "${escaped}" -p 2>/dev/null`, {
+        encoding: 'utf8', timeout: 2000,
+      })
+      this.proxyPaneCache = output.trim()
+      return this.proxyPaneCache
+    } catch {
+      return this.proxyPaneCache
+    }
+  }
+
+  private startProxyPoll() {
+    this.stopProxyPoll()
+    this.proxyPollTimer = setInterval(() => {
+      if (this.proxyMode) this.render()
+    }, 1000)
+  }
+
+  private stopProxyPoll() {
+    if (this.proxyPollTimer) {
+      clearInterval(this.proxyPollTimer)
+      this.proxyPollTimer = null
+    }
+  }
+
+  private sendRawKeys(keys: string, literal = false) {
+    if (!this.proxySessionName) return
+    try {
+      const { execSync } = require('child_process') as typeof import('child_process')
+      const escapedSession = this.proxySessionName.replace(/"/g, '\\"')
+      if (literal) {
+        // Send printable chars literally to avoid tmux key interpretation
+        const escapedKeys = keys.replace(/"/g, '\\"').replace(/\\/g, '\\\\')
+        execSync(`tmux send-keys -t "${escapedSession}" -l "${escapedKeys}"`, { timeout: 3000 })
+      } else {
+        execSync(`tmux send-keys -t "${escapedSession}" ${keys}`, { timeout: 3000 })
+      }
+    } catch {
+      // Session may be gone
     }
   }
 
@@ -449,6 +572,7 @@ class Monitor {
 
   private cleanup() {
     if (this.pollInterval) clearInterval(this.pollInterval)
+    this.stopProxyPoll()
     process.stdout.write(cursor.show)
     process.stdout.write(cursor.clearScreen)
     process.stdout.write(cursor.home)
@@ -477,7 +601,7 @@ class Monitor {
     // ── Inline Summary (replaces messages area when active) ──
     const headerHeight = 4
     const completionMenuHeight = this.completionMenuActive ? 8 : 0
-    const footerHeight = this.inputMode ? 4 : 3
+    const footerHeight = this.proxyMode ? 10 : (this.inputMode || this.proxySelectingAgent) ? 5 : 3
     const messageAreaHeight = h - headerHeight - footerHeight - completionMenuHeight
 
     if (this.showInlineSummary) {
@@ -558,10 +682,11 @@ class Monitor {
 
   private renderMessages(w: number, maxLines: number): string {
     const lines: string[] = []
-    const agentMessages = this.messages.filter(m => m.from !== 'ensemble' || m.content.includes('❌'))
+    const agentMessages = this.messages.filter(m => m.from !== 'ensemble' || m.content.includes('❌') || m.content.includes('⚠️') || m.content.includes('needs input'))
 
     // Calculate visible range
     const totalRendered: string[] = []
+    this.lastRenderedFrom = ''
     for (const msg of agentMessages) {
       totalRendered.push(...this.renderMessage(msg, w))
     }
@@ -581,6 +706,8 @@ class Monitor {
     return lines.join('')
   }
 
+  private lastRenderedFrom = ''
+
   private renderMessage(msg: Message, w: number): string[] {
     const lines: string[] = []
     const style = getAgentStyle(msg.from)
@@ -588,15 +715,24 @@ class Monitor {
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     })
 
-    // Agent badge
+    // Visual separator when switching between agents
+    if (this.lastRenderedFrom && this.lastRenderedFrom !== msg.from) {
+      lines.push(`  ${color.gray}${'·'.repeat(Math.min(w - 4, 60))}${color.reset}`)
+      lines.push('')
+    }
+    this.lastRenderedFrom = msg.from
+
+    // Agent badge + target
     const badge = `${style.badge}${color.bold} ${msg.from} ${color.reset}`
     const timeStr = `${color.gray}${time}${color.reset}`
-    const header = `  ${style.text}${style.icon}${color.reset} ${badge} ${timeStr}`
-
-    lines.push(header)
+    const targetSuffix = msg.from === 'user' && msg.to && msg.to !== 'team'
+      ? ` ${color.dim}→${color.reset} ${getAgentStyle(msg.to).badge}${color.bold} ${msg.to} ${color.reset}`
+      : ''
+    lines.push(`  ${style.text}${style.icon}${color.reset} ${badge}${targetSuffix} ${timeStr}`)
+    lines.push('')
 
     // Clean and structure content for terminal display
-    const contentWidth = w - 8
+    const contentWidth = w - 10
     const raw = msg.content
       .replace(/\s*\/tmp\/ensemble[-\w]*\s*/g, '')  // strip leaked path
       .trim()
@@ -604,10 +740,11 @@ class Monitor {
     // Parse into structured blocks
     const rendered = this.renderMarkdown(raw, style, contentWidth)
     for (const rLine of rendered) {
-      lines.push(`    ${color.dim}│${color.reset} ${rLine}`)
+      lines.push(`      ${rLine}`)
     }
 
-    lines.push('') // spacing between messages
+    lines.push('')
+    lines.push('')
 
     return lines
   }
@@ -618,7 +755,38 @@ class Monitor {
     // Separator
     lines.push(`${color.gray}${'─'.repeat(w)}${color.reset}\n`)
 
-    if (this.inputMode) {
+    if (this.proxySelectingAgent) {
+      lines.push(
+        `${color.bgYellow}${color.black} RAW PROXY ${color.reset}` +
+        `${color.brightWhite} Select agent by number:${color.reset}`
+      )
+      if (this.team?.agents) {
+        const agentList = this.team.agents.map((a, i) =>
+          `${color.brightWhite}[${i + 1}]${color.reset} ${a.name}`
+        ).join('  ')
+        lines.push(`  ${agentList}`)
+      }
+      lines.push(
+        `${color.gray}  ESC cancel${color.reset}\n`
+      )
+    } else if (this.proxyMode) {
+      const targetStyle = getAgentStyle(this.proxyTarget)
+      lines.push(
+        `${color.bgYellow}${color.black} RAW PROXY ${color.reset}` +
+        ` → ${targetStyle.badge} ${this.proxyTarget} ${color.reset}` +
+        `${color.dim} │ double-Esc to exit${color.reset}\n`
+      )
+      // Live pane preview — show what the agent is currently displaying
+      const panePreview = this.captureProxyPane()
+      if (panePreview) {
+        const previewLines = panePreview.split('\n').slice(-6)
+        for (const pl of previewLines) {
+          lines.push(`  ${color.dim}│${color.reset} ${color.yellow}${pl.slice(0, w - 6)}${color.reset}\n`)
+        }
+      } else {
+        lines.push(`  ${color.dim}(capturing pane...)${color.reset}\n`)
+      }
+    } else if (this.inputMode) {
       const targetStyle = getAgentStyle(this.inputTarget)
       lines.push(
         `${color.bgBlack}${color.brightWhite} ▸ To: ` +
@@ -636,6 +804,7 @@ class Monitor {
       lines.push(
         `${color.gray} [s]${color.reset} steer team  ` +
         `${color.gray}[1-${this.team?.agents.length || 2}]${color.reset} steer agent  ` +
+        `${color.gray}[!]${color.reset} raw proxy  ` +
         `${color.gray}[j/k]${color.reset} scroll  ` +
         `${scrollInfo}` +
         `${color.gray}[d]${color.reset} disband  ` +
@@ -756,70 +925,109 @@ class Monitor {
     const txt = style.text
     const rst = color.reset
 
-    // First: split content into logical segments
-    // Detect patterns like "**1." or numbered items or "---" as block separators
-    const content = raw
-      // Normalize: turn "**N." patterns into newlines for list items
-      .replace(/\*\*(\d+)\.\s*/g, '\n\n$1. ')
-      // Turn "---" separators into blank lines
-      .replace(/\s*---\s*/g, '\n\n')
-      // Turn "Pro:" / "Con:" / "Tagline:" etc into new lines
-      .replace(/\s+(Pro:|Con:|Tagline:|Why |How |USP|PHASE|OPTIE|SAMENVATTING)/g, '\n  $1')
-      // Turn "```" code blocks into indented blocks
-      .replace(/```(\w*)\n?/g, '\n')
+    // Preserve the original line structure — split on every newline
+    const rawLines = raw.split('\n')
+    let inCodeBlock = false
 
-    // Split into paragraphs on double newlines
-    const paragraphs = content.split(/\n{2,}/)
+    for (const rawLine of rawLines) {
+      // Handle code block fences
+      if (rawLine.trimStart().startsWith('```')) {
+        inCodeBlock = !inCodeBlock
+        if (inCodeBlock) {
+          lines.push(`${color.dim}${'─'.repeat(Math.min(width, 40))}${rst}`)
+        } else {
+          lines.push(`${color.dim}${'─'.repeat(Math.min(width, 40))}${rst}`)
+        }
+        continue
+      }
 
-    for (const para of paragraphs) {
-      const trimmed = para.trim()
-      if (!trimmed) {
+      // Code block content — render as-is with dim styling
+      if (inCodeBlock) {
+        const wrapped = this.wrapPlain(rawLine, width - 2)
+        for (const w of wrapped) {
+          lines.push(`${color.dim}  ${w}${rst}`)
+        }
+        continue
+      }
+
+      // Empty line — preserve as blank line for spacing
+      if (!rawLine.trim()) {
         lines.push('')
         continue
       }
 
-      // Split on single newlines within paragraph
-      const sublines = trimmed.split('\n')
+      let line = rawLine
 
-      for (const sub of sublines) {
-        let line = sub.trim()
-        if (!line) continue
+      // Apply inline formatting
+      // **bold** → terminal bold
+      line = line.replace(/\*\*([^*]+)\*\*/g, `${color.bold}${color.brightWhite}$1${rst}${txt}`)
+      // `code` → dim
+      line = line.replace(/`([^`]+)`/g, `${color.dim}$1${rst}${txt}`)
+      // --- separator → horizontal rule
+      if (/^-{3,}\s*$/.test(rawLine.trim())) {
+        lines.push(`${color.dim}${'─'.repeat(Math.min(width, 50))}${rst}`)
+        continue
+      }
 
-        // Apply inline formatting
-        // **bold** → terminal bold
-        line = line.replace(/\*\*([^*]+)\*\*/g, `${color.bold}${color.brightWhite}$1${rst}${txt}`)
-        // `code` → dim
-        line = line.replace(/`([^`]+)`/g, `${color.dim}$1${rst}${txt}`)
-        // Emoji cleanup (keep as-is, they render fine)
+      // Detect line type
+      const trimmed = rawLine.trimStart()
+      const indent = rawLine.length - trimmed.length
+      const indentStr = ' '.repeat(Math.min(indent, 8))
 
-        // Detect line type for prefix styling
-        const isListItem = /^\d+\.\s/.test(line)
-        const isSubPoint = /^(Pro:|Con:|Tagline:|→|>|-)/.test(line)
+      // Headings: # ## ###
+      if (/^#{1,3}\s/.test(trimmed)) {
+        const heading = trimmed.replace(/^#{1,3}\s+/, '')
+        lines.push(`${color.bold}${color.brightWhite}${indentStr}${heading}${rst}`)
+        continue
+      }
 
-        if (isListItem) {
-          lines.push('') // space before list items
-          const numMatch = line.match(/^(\d+)\.\s(.*)/)
-          if (numMatch) {
-            const num = numMatch[1]
-            const rest = numMatch[2]
-            const prefix = `${color.bold}${color.brightWhite}${num}.${rst} `
-            const wrapped = this.wrapPlain(rest, width - 4)
-            lines.push(`${prefix}${txt}${wrapped[0]}${rst}`)
-            for (let i = 1; i < wrapped.length; i++) {
-              lines.push(`   ${txt}${wrapped[i]}${rst}`)
-            }
-          }
-        } else if (isSubPoint) {
-          const wrapped = this.wrapPlain(line, width - 4)
-          for (const w of wrapped) {
-            lines.push(`   ${color.dim}${w}${rst}`)
-          }
-        } else {
-          const wrapped = this.wrapPlain(line, width)
-          for (const w of wrapped) {
-            lines.push(`${txt}${w}${rst}`)
-          }
+      // Numbered list: 1. 2. etc
+      const numMatch = trimmed.match(/^(\d+)\.\s(.*)/)
+      if (numMatch) {
+        const num = numMatch[1]
+        const rest = numMatch[2]
+        // Apply inline formatting to rest too
+        const fmtRest = rest
+          .replace(/\*\*([^*]+)\*\*/g, `${color.bold}${color.brightWhite}$1${rst}${txt}`)
+          .replace(/`([^`]+)`/g, `${color.dim}$1${rst}${txt}`)
+        const prefix = `${indentStr}${color.bold}${color.brightWhite}${num}.${rst} `
+        const wrapped = this.wrapPlain(this.stripAnsi(fmtRest), width - indent - 4)
+        lines.push(`${prefix}${txt}${wrapped[0]}${rst}`)
+        for (let i = 1; i < wrapped.length; i++) {
+          lines.push(`${indentStr}   ${txt}${wrapped[i]}${rst}`)
         }
+        continue
+      }
+
+      // Bullet list: - or *
+      const bulletMatch = trimmed.match(/^[-*]\s(.*)/)
+      if (bulletMatch) {
+        const rest = bulletMatch[1]
+        const fmtRest = rest
+          .replace(/\*\*([^*]+)\*\*/g, `${color.bold}${color.brightWhite}$1${rst}${txt}`)
+          .replace(/`([^`]+)`/g, `${color.dim}$1${rst}${txt}`)
+        const wrapped = this.wrapPlain(this.stripAnsi(fmtRest), width - indent - 4)
+        lines.push(`${indentStr}${color.dim}•${rst} ${txt}${wrapped[0]}${rst}`)
+        for (let i = 1; i < wrapped.length; i++) {
+          lines.push(`${indentStr}  ${txt}${wrapped[i]}${rst}`)
+        }
+        continue
+      }
+
+      // Block quote: >
+      if (trimmed.startsWith('> ')) {
+        const quote = trimmed.slice(2)
+        const wrapped = this.wrapPlain(quote, width - indent - 4)
+        for (const w of wrapped) {
+          lines.push(`${indentStr}${color.dim}▎ ${w}${rst}`)
+        }
+        continue
+      }
+
+      // Regular text — preserve indentation, word wrap
+      const wrapped = this.wrapPlain(this.stripAnsi(line), width)
+      for (const w of wrapped) {
+        lines.push(`${txt}${w}${rst}`)
       }
     }
 

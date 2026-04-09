@@ -86,3 +86,12 @@ export function buildAgentCommand(program: string): string {
 
   return [agent.command, envFlags, defaultTokens.join(' ')].filter(Boolean).join(' ')
 }
+
+/**
+ * Build a CLI command with extra flags appended (e.g. --name, --resume).
+ */
+export function buildAgentCommandWithFlags(program: string, extraFlags: string[]): string {
+  const base = buildAgentCommand(program)
+  if (extraFlags.length === 0) return base
+  return `${base} ${extraFlags.join(' ')}`
+}

@@ -5,21 +5,37 @@ import type { AgentRuntime } from './agent-runtime'
 import type { EnsembleMessage, EnsembleTeam } from '../types/ensemble'
 
 const DEFAULT_POLL_INTERVAL_MS = 30_000
-const DEFAULT_NUDGE_MS = 90_000
-const DEFAULT_STALL_MS = 180_000
+const DEFAULT_NUDGE_MS = 900_000
+const DEFAULT_STALL_MS = 1_200_000
+const PROMPT_DETECT_STALE_MS = 10_000
 const WATCHDOG_NUDGE_TEXT = 'Are you still working? Share your progress with team-say.'
+
+// Patterns that indicate an agent is waiting for user input
+const PROMPT_PATTERNS = [
+  /Do you want to proceed\?/i,
+  /Esc to cancel/,
+  /approve.*deny/i,
+  /Yes,?\s+and don't ask/i,
+  /❯\s+\d+\.\s+(Yes|No)/,
+  /\d+\.\s+Yes.*\d+\.\s+No/s,
+  /Allow once/i,
+  /permission/i,
+]
 
 interface AgentWatchdogState {
   lastMessageAt: string
   nudgedAt?: string
   stalledAt?: string
+  lastPaneContent?: string
+  lastPaneChangeAt?: number
+  promptNotified?: boolean
 }
 
 interface AgentWatchdogDeps {
   loadTeams: () => EnsembleTeam[]
   getMessages: (teamId: string) => EnsembleMessage[]
   appendMessage: (teamId: string, message: EnsembleMessage) => void
-  getRuntime: () => Pick<AgentRuntime, 'sendKeys' | 'pasteFromFile'>
+  getRuntime: () => Pick<AgentRuntime, 'sendKeys' | 'pasteFromFile' | 'capturePane' | 'sessionExists'>
   resolveAgentProgram: (program: string) => { inputMethod: 'pasteFromFile' | 'sendKeys' }
   isSelf: (hostId?: string) => boolean
   getHostById: (hostId: string) => { url: string } | undefined
@@ -153,6 +169,74 @@ export class AgentWatchdog {
         ...currentState,
         stalledAt: new Date(nowMs).toISOString(),
       })
+    }
+
+    // Always check for interactive prompts regardless of nudge/stall state
+    for (const agent of activeAgents) {
+      const stateKey = `${team.id}:${agent.name}`
+      await this.checkForPrompt(team, agent, stateKey)
+    }
+  }
+
+  private async checkForPrompt(team: EnsembleTeam, agent: { name: string; hostId?: string }, stateKey: string): Promise<void> {
+    const sessionName = `${team.name}-${agent.name}`
+    if (agent.hostId && !this.deps.isSelf(agent.hostId)) return
+
+    const runtime = this.deps.getRuntime()
+    try {
+      const alive = await runtime.sessionExists(sessionName)
+      if (!alive) return
+
+      const paneContent = await runtime.capturePane(sessionName, 30)
+      const trimmed = paneContent.trim()
+      if (!trimmed) return
+
+      const currentState = this.state.get(stateKey)
+      if (!currentState) return
+
+      const nowMs = this.now()
+
+      // Check if pane content changed
+      if (currentState.lastPaneContent !== trimmed) {
+        this.state.set(stateKey, {
+          ...currentState,
+          lastPaneContent: trimmed,
+          lastPaneChangeAt: nowMs,
+          promptNotified: false,
+        })
+        return
+      }
+
+      // Pane hasn't changed — check if it's been stale long enough
+      const staleMs = nowMs - (currentState.lastPaneChangeAt || nowMs)
+      if (staleMs < PROMPT_DETECT_STALE_MS) return
+      if (currentState.promptNotified) return
+
+      // Check if it looks like a prompt
+      const isPrompt = PROMPT_PATTERNS.some(p => p.test(trimmed))
+      if (!isPrompt) return
+
+      // Extract the last 8 lines as the prompt excerpt
+      const promptLines = trimmed.split('\n').slice(-8).join('\n')
+
+      this.deps.appendMessage(team.id, {
+        id: uuidv4(),
+        teamId: team.id,
+        from: 'ensemble',
+        to: 'team',
+        content: `⚠️ ${agent.name} needs input:\n${promptLines}\n\n→ In monitor: press ! then agent number to send raw keystrokes`,
+        type: 'chat',
+        timestamp: new Date(nowMs).toISOString(),
+      })
+
+      this.state.set(stateKey, {
+        ...currentState,
+        promptNotified: true,
+      })
+
+      console.log(`[Watchdog] Prompt detected for ${agent.name} in team ${team.id}`)
+    } catch {
+      // Capture failed — session may be gone
     }
   }
 

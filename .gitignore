@@ -26,3 +26,6 @@ Thumbs.db
 
 # JSONL persistence files (local data)
 *.jsonl
+
+# Team memory archive (expired entries)
+.team-memory/archive/

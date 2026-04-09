@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "description": "Project-scoped persistent memory — editable knowledge base with temporal decay. Team-scoped working memory lives at /tmp/ensemble/<team-id>/working-memory/entries.json",
+  "categories": ["mistakes", "preferences", "decisions", "anti-patterns", "learnings"],
+  "entrySchema": {
+    "id": "mem-YYYYMMDD-NNN",
+    "category": "mistake|preference|decision|anti-pattern|learning",
+    "title": "string",
+    "content": "string",
+    "evidence": "string",
+    "created_by": "agent name",
+    "team_id": "originating team ID (provenance)",
+    "created_at": "ISO timestamp",
+    "updated_at": "ISO timestamp",
+    "expires_at": "ISO timestamp (+90 days default)",
+    "relevance_score": 1.0,
+    "tags": ["keywords"],
+    "status": "active|archived|permanent"
+  },
+  "entries": []
+}

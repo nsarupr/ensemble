@@ -8,6 +8,13 @@ import {
   createEnsembleTeam, getEnsembleTeam, listEnsembleTeams,
   getTeamFeed, sendTeamMessage, disbandTeam,
 } from './services/ensemble-service'
+import { WebSocketServer, WebSocket } from 'ws'
+import { attachToSession, type TerminalSession } from './lib/terminal-proxy'
+import fs from 'fs'
+import pathModule from 'path'
+import { fileURLToPath } from 'url'
+
+const __dirname = pathModule.dirname(fileURLToPath(import.meta.url))
 
 const PORT = parseInt(process.env.ENSEMBLE_PORT || process.env.ORCHESTRA_PORT || '23000', 10)
 const HOST = process.env.ENSEMBLE_HOST || '127.0.0.1'
@@ -131,6 +138,28 @@ const server = http.createServer(async (req, res) => {
       return json(res, { status: 'healthy', version: '1.0.0' }, 200, origin)
     }
 
+    // Working directory (for UI team creation)
+    if (path === '/api/v1/cwd') {
+      return json(res, { cwd: process.cwd() }, 200, origin)
+    }
+
+    // Folder picker — opens native macOS dialog, returns selected path
+    if (path === '/api/v1/pick-folder') {
+      try {
+        const { execSync } = await import('child_process')
+        const script = 'tell application "System Events" to set frontApp to name of first process whose frontmost is true\n' +
+          'set chosenFolder to POSIX path of (choose folder with prompt "Select working directory")\n' +
+          'tell application frontApp to activate\n' +
+          'return chosenFolder'
+        const result = execSync(`osascript -e '${script}'`, { encoding: 'utf8', timeout: 60000 }).trim()
+        // Remove trailing slash if present
+        const folder = result.endsWith('/') ? result.slice(0, -1) : result
+        return json(res, { folder }, 200, origin)
+      } catch {
+        return json(res, { folder: '', cancelled: true }, 200, origin)
+      }
+    }
+
     // List teams / Create team
     if (path === '/api/ensemble/teams') {
       if (method === 'GET') {
@@ -185,6 +214,38 @@ const server = http.createServer(async (req, res) => {
       return json(res, result.data, result.status, origin)
     }
 
+    // Resume: /api/ensemble/teams/:id/resume — creates a new team resuming sessions from a disbanded team
+    const resumeMatch = path.match(/^\/api\/ensemble\/teams\/([^/]+)\/resume$/)
+    if (resumeMatch && method === 'POST') {
+      const oldTeamId = resumeMatch[1]
+      const oldTeamResult = getEnsembleTeam(oldTeamId)
+      if (oldTeamResult.error || !oldTeamResult.data) {
+        return json(res, { error: 'Team not found' }, 404, origin)
+      }
+      const oldTeam = oldTeamResult.data.team
+      // Build a new team request reusing the old config
+      const newRequest = {
+        name: `${oldTeam.name}-resumed`,
+        description: oldTeam.description,
+        agents: oldTeam.agents.map((a: { program: string; role: string; hostId: string }) => ({
+          program: a.program,
+          role: a.role,
+          hostId: a.hostId,
+        })),
+        feedMode: oldTeam.feedMode,
+        workingDirectory: path ? undefined : undefined, // will use server cwd
+        resumeFrom: oldTeamId,
+      }
+      // Try to get working directory from the request body
+      try {
+        const body = JSON.parse(await readBody(req))
+        if (body.workingDirectory) (newRequest as Record<string, unknown>).workingDirectory = body.workingDirectory
+      } catch { /* no body, use defaults */ }
+      const result = await createEnsembleTeam(newRequest as Parameters<typeof createEnsembleTeam>[0])
+      if (result.error) return json(res, { error: result.error }, result.status, origin)
+      return json(res, result.data, result.status, origin)
+    }
+
     // Feed: /api/ensemble/teams/:id/feed
     const feedMatch = path.match(/^\/api\/ensemble\/teams\/([^/]+)\/feed$/)
     if (feedMatch && method === 'GET') {
@@ -192,6 +253,53 @@ const server = http.createServer(async (req, res) => {
       const result = getTeamFeed(feedMatch[1], since)
       if (result.error) return json(res, { error: result.error }, result.status, origin)
       return json(res, result.data, result.status, origin)
+    }
+
+    // Static UI files: /ui, /ui/*, /ui/node_modules/*
+    if (path === '/ui' || path === '/ui/') {
+      const indexPath = pathModule.join(__dirname, 'ui', 'index.html')
+      try {
+        const content = fs.readFileSync(indexPath, 'utf-8')
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(content)
+        return
+      } catch {
+        return json(res, { error: 'UI not found' }, 404, origin)
+      }
+    }
+
+    if (path.startsWith('/ui/')) {
+      const relativePath = path.slice(4)
+      let filePath: string
+      if (relativePath.startsWith('node_modules/')) {
+        filePath = pathModule.join(__dirname, relativePath)
+      } else {
+        filePath = pathModule.join(__dirname, 'ui', relativePath)
+      }
+
+      const resolved = pathModule.resolve(filePath)
+      const allowedDirs = [
+        pathModule.resolve(pathModule.join(__dirname, 'ui')),
+        pathModule.resolve(pathModule.join(__dirname, 'node_modules')),
+      ]
+      if (!allowedDirs.some(dir => resolved.startsWith(dir))) {
+        return json(res, { error: 'Forbidden' }, 403, origin)
+      }
+
+      try {
+        const content = fs.readFileSync(resolved)
+        const ext = pathModule.extname(resolved)
+        const mimeTypes: Record<string, string> = {
+          '.html': 'text/html', '.js': 'application/javascript', '.mjs': 'application/javascript',
+          '.css': 'text/css', '.json': 'application/json', '.map': 'application/json',
+          '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2',
+        }
+        res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' })
+        res.end(content)
+        return
+      } catch {
+        return json(res, { error: 'Not found' }, 404, origin)
+      }
     }
 
     json(res, { error: 'Not found' }, 404, origin)
@@ -213,5 +321,104 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[Ensemble] Server running on http://${HOST}:${PORT}`)
+  console.log(`[Ensemble] Web UI: http://localhost:${PORT}/ui`)
   console.log(`[Ensemble] Health: http://localhost:${PORT}/api/v1/health`)
+})
+
+// ─── WebSocket Terminal Proxy ─────────────────────────────────────
+const wss = new WebSocketServer({ noServer: true })
+const activeSessions = new Map<WebSocket, TerminalSession>()
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url || '/', `http://localhost:${PORT}`)
+  const wsPath = url.pathname
+
+  const match = wsPath.match(/^\/ws\/terminal\/([^/]+)\/([^/]+)$/)
+  if (!match) {
+    socket.destroy()
+    return
+  }
+
+  const teamId = match[1]
+  const agentName = match[2]
+
+  const teamResult = getEnsembleTeam(teamId)
+  if (teamResult.error || !teamResult.data) {
+    socket.destroy()
+    return
+  }
+
+  const team = teamResult.data.team
+  const agent = team.agents.find((a: { name: string }) => a.name === agentName)
+  if (!agent) {
+    socket.destroy()
+    return
+  }
+
+  const sessionName = `${team.name}-${agent.name}`
+
+  wss.handleUpgrade(req, socket, head, (ws) => {
+    wss.emit('connection', ws, req)
+
+    let terminal: TerminalSession
+    try {
+      const cols = parseInt(url.searchParams.get('cols') || '120', 10)
+      const rows = parseInt(url.searchParams.get('rows') || '40', 10)
+      terminal = attachToSession(sessionName, cols, rows)
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err)
+      ws.send(JSON.stringify({ type: 'error', message: `Failed to attach: ${reason}` }))
+      ws.close()
+      return
+    }
+
+    activeSessions.set(ws, terminal)
+
+    terminal.onData((data) => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(data)
+      }
+    })
+
+    terminal.onExit(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'exit', message: 'Session ended' }))
+        ws.close()
+      }
+      activeSessions.delete(ws)
+    })
+
+    ws.on('message', (msg) => {
+      const data = msg.toString()
+      try {
+        const parsed = JSON.parse(data)
+        if (parsed.type === 'resize' && parsed.cols && parsed.rows) {
+          terminal.resize(parsed.cols, parsed.rows)
+          return
+        }
+        if (parsed.type === 'input') {
+          terminal.write(parsed.data)
+          return
+        }
+      } catch {
+        terminal.write(data)
+      }
+    })
+
+    ws.on('close', () => {
+      terminal.kill()
+      activeSessions.delete(ws)
+    })
+
+    ws.on('error', () => {
+      terminal.kill()
+      activeSessions.delete(ws)
+    })
+  })
+})
+
+process.on('SIGINT', () => {
+  for (const [, session] of activeSessions) {
+    session.kill()
+  }
 })

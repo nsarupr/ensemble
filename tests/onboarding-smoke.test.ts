@@ -167,7 +167,7 @@ describe('onboarding smoke test', () => {
       encoding: 'utf8',
     })).stdout
     expect(teamsAfterOutput).toContain('my-first-team')
-    expect(teamsAfterOutput).toContain('codex-1')
-    expect(teamsAfterOutput).toContain('claude-2')
+    expect(teamsAfterOutput).toContain('lead')
+    expect(teamsAfterOutput).toContain('worker')
   })
 })

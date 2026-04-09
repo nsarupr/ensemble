@@ -7,7 +7,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { getRuntime } from './agent-runtime'
 import { getSelfHostId } from './hosts-config'
-import { buildAgentCommand } from './agent-config'
+import { buildAgentCommand, buildAgentCommandWithFlags } from './agent-config'
 
 export interface SpawnedAgent {
   id: string
@@ -23,6 +23,7 @@ interface SpawnAgentOptions {
   program: string
   workingDirectory: string
   hostId?: string
+  extraFlags?: string[]  // Additional CLI flags (e.g. --name, --resume)
 }
 
 /** Compute tmux session name from agent name */
@@ -51,8 +52,10 @@ export async function spawnLocalAgent(options: SpawnAgentOptions): Promise<Spawn
   // Small delay for session init
   await new Promise(r => setTimeout(r, 300))
 
-  // Start the AI program
-  const startCommand = resolveStartCommand(options.program)
+  // Start the AI program (with optional extra flags for resume, naming, etc.)
+  const startCommand = options.extraFlags?.length
+    ? buildAgentCommandWithFlags(options.program, options.extraFlags)
+    : resolveStartCommand(options.program)
 
   // Forward ENSEMBLE_* and agent-specific env vars to tmux session
   const envForward = Object.entries(process.env)

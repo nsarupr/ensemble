@@ -20,6 +20,8 @@ export interface EnsembleTeamAgent {
   status: 'spawning' | 'active' | 'idle' | 'done' | 'failed'
   worktreePath?: string
   worktreeBranch?: string
+  sessionId?: string       // CLI session/conversation ID for resume
+  sessionName?: string     // Named session label (for Claude --name / --resume)
 }
 
 export interface EnsembleTeamResult {
@@ -55,6 +57,7 @@ export interface CreateTeamRequest {
   useWorktrees?: boolean
   staged?: boolean
   stagedConfig?: StagedWorkflowConfig
+  resumeFrom?: string  // Team ID to resume from — agents use --resume with stored session names
 }
 
 export type StagedPhase = 'plan' | 'exec' | 'verify'
@@ -69,6 +72,7 @@ export interface StagedWorkflowConfig {
 export interface CollabTemplateRole {
   role: string
   focus: string
+  program?: string  // Optional: auto-derive agent program from template (e.g. "claude", "codex")
 }
 
 export interface CollabTemplate {
@@ -76,6 +80,7 @@ export interface CollabTemplate {
   description: string
   suggestedTaskPrefix: string
   roles: CollabTemplateRole[]
+  mandatoryArtifacts?: string[]  // Artifact types that must get Critic PROCEED before completion
 }
 
 export interface CollabTemplatesFile {

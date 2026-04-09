@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ensemble</title>
+  <link rel="stylesheet" href="/ui/node_modules/@xterm/xterm/css/xterm.css">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg-primary: #0d1117;
+      --bg-secondary: #161b22;
+      --bg-tertiary: #21262d;
+      --border: #30363d;
+      --text-primary: #e6edf3;
+      --text-secondary: #8b949e;
+      --text-muted: #484f58;
+      --accent: #58a6ff;
+      --accent-green: #3fb950;
+      --accent-red: #f85149;
+      --accent-yellow: #d29922;
+      --sidebar-width: 220px;
+      --inputbar-height: 56px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh;
+      overflow: hidden;
+      overscroll-behavior: none;
+    }
+
+    #app {
+      display: grid;
+      grid-template-rows: 1fr var(--inputbar-height);
+      height: 100vh;
+    }
+
+    #app.layout-2 {
+      grid-template-columns: var(--sidebar-width) 1fr 1fr;
+      grid-template-areas:
+        "sidebar panel-left panel-right"
+        "sidebar inputbar inputbar";
+    }
+
+    #app.layout-3plus {
+      grid-template-columns: var(--sidebar-width) 1fr 1fr 0.85fr;
+      grid-template-areas:
+        "sidebar panel-left panel-right panel-extra"
+        "sidebar inputbar inputbar inputbar";
+    }
+
+    /* Sidebar */
+    #sidebar {
+      grid-area: sidebar;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #sidebar-header {
+      padding: 16px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #sidebar-header span {
+      font-size: 18px;
+      color: var(--text-primary);
+      display: block;
+      margin-bottom: 2px;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+
+    #team-list { flex: 1; overflow-y: auto; padding: 8px; }
+
+    .team-item {
+      padding: 10px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-bottom: 4px;
+      transition: background 0.15s;
+    }
+
+    .team-item:hover { background: var(--bg-tertiary); }
+    .team-item.active { background: var(--bg-tertiary); border-left: 3px solid var(--accent); }
+
+    .team-item .team-name {
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .team-item .team-meta {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .status-dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+
+    .status-dot.active { background: var(--accent-green); }
+    .status-dot.forming { background: var(--accent-yellow); }
+    .status-dot.disbanded, .status-dot.completed { background: var(--text-muted); }
+
+    /* New-team form */
+    #new-team-form {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    #new-team-form label {
+      font-size: 11px;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      display: block;
+      margin-bottom: 4px;
+      margin-top: 8px;
+    }
+
+    #new-team-form label:first-child { margin-top: 0; }
+
+    #new-team-form select,
+    #new-team-form textarea,
+    #new-team-form input[type="text"] {
+      width: 100%;
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 12px;
+      font-family: 'SF Mono', 'Menlo', monospace;
+      outline: none;
+      resize: none;
+    }
+
+    #new-team-form textarea { height: 60px; }
+
+    #new-team-form select:focus,
+    #new-team-form textarea:focus,
+    #new-team-form input[type="text"]:focus { border-color: var(--accent); }
+
+    #launch-btn {
+      width: 100%;
+      margin-top: 8px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    #launch-btn:hover { opacity: 0.9; }
+    #launch-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    #launch-error {
+      color: var(--accent-red);
+      font-size: 11px;
+      margin-top: 4px;
+      display: none;
+    }
+
+    /* Terminal Panels */
+    .terminal-panel {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-right: 1px solid var(--border);
+    }
+
+    #panel-left { grid-area: panel-left; }
+    #panel-right { grid-area: panel-right; border-right: none; }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+      min-height: 36px;
+    }
+
+    .panel-header .agent-name { font-weight: 600; }
+
+    .panel-header .agent-program {
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+    }
+
+    .panel-header .agent-status {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .panel-body {
+      flex: 1;
+      background: #000;
+      position: relative;
+      overflow: hidden;
+    }
+
+    /* Ensure xterm fills the container fully */
+    .panel-body .xterm {
+      height: 100% !important;
+      width: 100% !important;
+    }
+    .panel-body .xterm-viewport {
+      height: 100% !important;
+      width: 100% !important;
+    }
+    .panel-body .xterm-screen {
+      height: 100% !important;
+      width: 100% !important;
+    }
+
+    .panel-body.focused {
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
+    }
+
+    .panel-placeholder {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    /* Tab panel (panel-extra) */
+    #panel-extra {
+      grid-area: panel-extra;
+      display: none; /* shown by JS when 3+ agents */
+      flex-direction: column;
+      overflow: hidden;
+      border-left: 1px solid var(--border);
+    }
+
+    #tab-bar {
+      display: flex;
+      gap: 0;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border);
+      min-height: 36px;
+      align-items: stretch;
+    }
+
+    .tab-item {
+      padding: 8px 14px;
+      font-size: 12px;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: color 0.15s, border-color 0.15s;
+      white-space: nowrap;
+    }
+
+    .tab-item:hover { color: var(--text-secondary); }
+
+    .tab-item.active {
+      color: var(--text-primary);
+      border-bottom-color: var(--accent);
+    }
+
+    #tab-terminals {
+      flex: 1;
+      position: relative;
+      background: #000;
+    }
+
+    #tab-terminals .tab-terminal-body {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: none; /* JS toggles */
+      overflow: hidden;
+    }
+
+    #tab-terminals .tab-terminal-body.active {
+      display: block;
+    }
+
+    #tab-terminals .xterm,
+    #tab-terminals .xterm-viewport,
+    #tab-terminals .xterm-screen {
+      height: 100% !important;
+      width: 100% !important;
+    }
+
+    /* Input Bar */
+    #inputbar {
+      grid-area: inputbar;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border);
+    }
+
+    #inputbar select {
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-size: 13px;
+      outline: none;
+      overflow: hidden; /* prevent scroll cycling through options */
+    }
+
+    #inputbar input {
+      flex: 1;
+      background: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 12px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    #inputbar input:focus { border-color: var(--accent); }
+
+    #inputbar button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      padding: 6px 16px;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+
+    #inputbar button:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+  <div id="app" class="layout-2">
+    <div id="sidebar">
+      <div id="sidebar-header">
+        <span>Ensemble</span>
+        teams
+      </div>
+      <div id="team-list"></div>
+      <div id="new-team-form">
+        <label for="template-select">Template</label>
+        <select id="template-select">
+          <option value="eng-duo">Duo &mdash; 2 agents</option>
+          <option value="eng-research">Research &mdash; 4 agents</option>
+          <option value="eng-fix">Bug Fix &mdash; 5 agents</option>
+        </select>
+        <label for="cwd-input">Directory</label>
+        <div style="display:flex;gap:4px;">
+          <input type="text" id="cwd-input" placeholder="Loading..." style="flex:1;" />
+          <button type="button" id="browse-btn" style="
+            background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);
+            border-radius:4px;padding:4px 8px;font-size:11px;cursor:pointer;white-space:nowrap;
+          ">Browse</button>
+        </div>
+        <label for="task-input">Task</label>
+        <textarea id="task-input" rows="3" placeholder="Describe the task..."></textarea>
+        <button id="launch-btn">Launch</button>
+        <div id="launch-error"></div>
+      </div>
+    </div>
+
+    <div id="panel-left" class="terminal-panel">
+      <div class="panel-header">
+        <span class="agent-name" id="left-agent-name">&mdash;</span>
+        <span class="agent-program" id="left-agent-program"></span>
+        <span class="agent-status" id="left-agent-status"></span>
+      </div>
+      <div class="panel-body" id="left-terminal">
+        <div class="panel-placeholder">Select a team to begin</div>
+      </div>
+    </div>
+
+    <div id="panel-right" class="terminal-panel">
+      <div class="panel-header">
+        <span class="agent-name" id="right-agent-name">&mdash;</span>
+        <span class="agent-program" id="right-agent-program"></span>
+        <span class="agent-status" id="right-agent-status"></span>
+      </div>
+      <div class="panel-body" id="right-terminal">
+        <div class="panel-placeholder">Select a team to begin</div>
+      </div>
+    </div>
+
+    <div id="panel-extra">
+      <div id="tab-bar"></div>
+      <div id="tab-terminals"></div>
+    </div>
+
+    <div id="inputbar">
+      <select id="msg-target">
+        <option value="team">team</option>
+      </select>
+      <input type="text" id="msg-input" placeholder="Send a message to the team..." />
+      <button id="msg-send">Send</button>
+      <button id="resume-btn" style="
+        background:transparent;color:var(--accent-green);border:1px solid var(--accent-green);
+        border-radius:4px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;display:none;
+      ">Resume</button>
+      <button id="disband-btn" style="
+        background:transparent;color:var(--accent-red);border:1px solid var(--accent-red);
+        border-radius:4px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;
+      ">Disband</button>
+    </div>
+  </div>
+
+  <script src="/ui/node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="/ui/node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="/ui/app.js"></script>
+</body>
+</html>

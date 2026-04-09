@@ -52,6 +52,8 @@ describe('AgentWatchdog', () => {
   let appended: EnsembleMessage[]
   let sendKeys: ReturnType<typeof vi.fn>
   let pasteFromFile: ReturnType<typeof vi.fn>
+  let capturePane: ReturnType<typeof vi.fn>
+  let sessionExists: ReturnType<typeof vi.fn>
   let postRemoteSessionCommand: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
@@ -62,6 +64,8 @@ describe('AgentWatchdog', () => {
     appended = []
     sendKeys = vi.fn(async () => {})
     pasteFromFile = vi.fn(async () => {})
+    capturePane = vi.fn(async () => '')
+    sessionExists = vi.fn(async () => true)
     postRemoteSessionCommand = vi.fn(async () => {})
   })
 
@@ -83,7 +87,7 @@ describe('AgentWatchdog', () => {
       loadTeams: () => teams,
       getMessages: () => messages,
       appendMessage: (_teamId, message) => appended.push(message),
-      getRuntime: () => ({ sendKeys, pasteFromFile }),
+      getRuntime: () => ({ sendKeys, pasteFromFile, capturePane, sessionExists }),
       resolveAgentProgram: () => ({ inputMethod: 'sendKeys' }),
       isSelf: () => true,
       getHostById: () => undefined,

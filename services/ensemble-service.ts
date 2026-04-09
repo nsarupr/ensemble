@@ -288,10 +288,26 @@ export function buildPromptPreview(params: {
         ]
   }
 
-  return [
+  const preamble = [
     `You are ${params.agentName} in team "${params.teamName}" with teammate ${params.teammateNames.join(', ')}.`,
     `Task: ${params.description}`,
     ...roleInstructions,
+  ]
+
+  // For template-based teams (eng-*), the role focus already contains communication
+  // instructions. Only add generic polling rules for non-template teams.
+  if (template) {
+    return [
+      ...preamble,
+      `TOOLS:`,
+      `Send messages: ${teamSayCmd} "your message"`,
+      `Read messages: ${teamReadCmd}`,
+      `Use these when YOUR role instructions tell you to communicate. Do not poll or loop unless your role says to.`,
+    ].join(' ')
+  }
+
+  return [
+    ...preamble,
     `COMMUNICATION RULES:`,
     `1. Send findings: ${teamSayCmd} "your message"`,
     `2. Read teammate messages: ${teamReadCmd}`,
@@ -306,6 +322,27 @@ export function buildPromptPreview(params: {
 export async function createEnsembleTeam(
   request: CreateTeamRequest
 ): Promise<ServiceResult<{ team: EnsembleTeam }>> {
+  // Auto-derive agents from template if no agents specified
+  if ((!request.agents || request.agents.length === 0) && request.templateName) {
+    const template = loadCollabTemplate(request.templateName)
+    if (template) {
+      const rolesWithProgram = template.roles.filter(r => r.program)
+      if (rolesWithProgram.length === template.roles.length) {
+        request.agents = template.roles.map(r => ({
+          program: r.program!,
+          role: r.role,
+        }))
+        console.log(`[Ensemble] Auto-derived ${request.agents.length} agents from template "${request.templateName}"`)
+      } else {
+        return { error: `Template "${request.templateName}" has roles without program field — specify agents manually`, status: 400 }
+      }
+    }
+  }
+
+  if (!request.agents || request.agents.length === 0) {
+    return { error: 'No agents specified and template has no program mappings', status: 400 }
+  }
+
   const team = createTeam(request)
   const cwd = request.workingDirectory || process.cwd()
   const worktreeMap = new Map<string, WorktreeInfo>()
@@ -355,6 +392,20 @@ export async function createEnsembleTeam(
     })
   }
 
+  // Load session names from previous team if resuming
+  let resumeSessionMap = new Map<string, string>()
+  if (request.resumeFrom) {
+    const oldTeam = getTeam(request.resumeFrom)
+    if (oldTeam) {
+      for (const agent of oldTeam.agents) {
+        if (agent.sessionName) {
+          resumeSessionMap.set(agent.name, agent.sessionName)
+        }
+      }
+      console.log(`[Ensemble] Resuming from team ${request.resumeFrom} with ${resumeSessionMap.size} session names`)
+    }
+  }
+
   // Phase 1: Spawn all agents
   for (let i = 0; i < team.agents.length; i++) {
     const agentSpec = team.agents[i]
@@ -367,9 +418,34 @@ export async function createEnsembleTeam(
     fs.writeFileSync(promptFile, prompt)
     console.log(`[Ensemble] Prompt for ${agentSpec.name}: ${prompt}`)
 
+    // Build extra flags for session naming and resume
+    const extraFlags: string[] = []
+    const sessionLabel = `ens-${team.id.slice(0, 8)}-${agentSpec.name}`
+    const prevSessionName = resumeSessionMap.get(agentSpec.name)
+    const agentConfig = resolveAgentProgram(agentSpec.program)
+
+    if (agentConfig.name === 'claude' || agentSpec.program === 'claude') {
+      if (prevSessionName) {
+        // Resume Claude session by name
+        extraFlags.push('--resume', `"${prevSessionName}"`)
+      } else {
+        // Name new session for future resume
+        extraFlags.push('--name', `"${sessionLabel}"`)
+      }
+    } else if (agentConfig.name === 'codex' || agentSpec.program === 'codex') {
+      if (prevSessionName) {
+        // Resume Codex session — use `resume <session-name>` subcommand
+        // Override the command entirely: codex resume <name> --full-auto
+        extraFlags.push('resume', `"${prevSessionName}"`)
+      }
+    }
+
+    // Store session name on the agent record
+    team.agents[i].sessionName = prevSessionName || sessionLabel
+
     try {
       let agentId: string
-      console.log(`[Ensemble] Spawning ${agentName} (${agentSpec.program}) on ${hostId} (self=${isSelf(hostId)})`)
+      console.log(`[Ensemble] Spawning ${agentName} (${agentSpec.program}) on ${hostId} (self=${isSelf(hostId)}) sessionName=${team.agents[i].sessionName}`)
 
       if (isSelf(hostId)) {
         const agentCwd = worktreeMap.get(agentSpec.name)?.path || cwd
@@ -378,6 +454,7 @@ export async function createEnsembleTeam(
           program: agentSpec.program,
           workingDirectory: agentCwd,
           hostId,
+          extraFlags,
         })
         agentId = spawned.id
       } else {
@@ -421,6 +498,7 @@ export async function createEnsembleTeam(
       const start = Date.now()
       const agentConfig = resolveAgentProgram(program)
       const readyMarker = agentConfig.readyMarker
+      let interactionNotified = false
       while (Date.now() - start < maxWait) {
         try {
           if (hostId && !isSelf(hostId)) {
@@ -434,6 +512,20 @@ export async function createEnsembleTeam(
             if (output.includes(readyMarker)) {
               console.log(`[Ensemble] ${sessionName} is ready (${Math.round((Date.now() - start) / 1000)}s)`)
               return true
+            }
+            // If the pane has meaningful output but no readyMarker after 10s,
+            // the agent likely needs user interaction (e.g. a confirmation dialog)
+            const elapsed = Date.now() - start
+            const trimmed = output.trim()
+            if (!interactionNotified && elapsed > 10000 && trimmed.length > 50) {
+              interactionNotified = true
+              const lastLines = trimmed.split('\n').slice(-6).join('\n')
+              appendMessage(team.id, {
+                id: uuidv4(), teamId: team.id, from: 'ensemble', to: 'team',
+                content: `⚠️ ${sessionName} may need interaction. Attach to respond:\n  tmux attach -t ${sessionName}\n\nPane output:\n${lastLines}`,
+                type: 'chat', timestamp: new Date().toISOString(),
+              })
+              console.warn(`[Ensemble] ${sessionName} may need user interaction — pane has output but readyMarker not found`)
             }
           }
         } catch { /* not ready yet */ }

@@ -11,7 +11,7 @@
   "claude": {
     "name": "claude",
     "command": "claude",
-    "flags": ["--dangerously-skip-permissions"],
+    "flags": ["--permission-mode", "auto"],
     "readyMarker": "❯",
     "inputMethod": "sendKeys",
     "color": "green",
@@ -43,5 +43,14 @@
     "inputMethod": "sendKeys",
     "color": "cyan",
     "icon": "▣"
+  },
+  "critic": {
+    "name": "critic",
+    "command": "codex",
+    "flags": ["--full-auto"],
+    "readyMarker": "›",
+    "inputMethod": "pasteFromFile",
+    "color": "red",
+    "icon": "✖"
   }
 }
