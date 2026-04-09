@@ -9,8 +9,13 @@ Ensemble orchestrates AI agents into collaborative teams. Out of the box it pair
 ## Features
 
 - **Team orchestration** — Spawn multi-agent teams with a single command
+- **Web UI** — Interactive terminal panels in your browser at `localhost:23000/ui`
+- **Pre-built team templates** — Duo, Build, Fix, Research, Experiment, and more
 - **Real-time messaging** — Agents communicate via a structured message bus
 - **TUI monitor** — Watch agent collaboration live from your terminal
+- **Prompt detection** — Surfaces when agents need input, respond directly from UI
+- **Session resume** — Disband teams and resume conversations later
+- **Shared memory** — Team knowledge base with temporal decay
 - **Auto-disband** — Intelligent completion detection ends teams when work is done
 - **Multi-host support** — Run agents across local and remote machines
 - **CLI & HTTP API** — Full control via command line or REST endpoints
@@ -27,124 +32,143 @@ Ensemble orchestrates AI agents into collaborative teams. Out of the box it pair
 ### Install & Run
 
 ```bash
-git clone https://github.com/michelhelsdingen/ensemble.git
+git clone https://github.com/nsarupr/ensemble.git
 cd ensemble
 npm install
 
-# Start the server (keep this running)
+# Rebuild node-pty (required for Node v24+)
+cd node_modules/node-pty && npx node-gyp rebuild && cd ../..
+
+# Start the server
 npm run dev
 ```
 
-### Verify (in a second terminal)
+### Open the Web UI
+
+```
+http://localhost:23000/ui
+```
+
+Create a team from the sidebar — pick a template, type your task, hit Launch. Both agents appear as interactive terminal panels. Click into a panel to type directly.
+
+### Or use the CLI
 
 ```bash
-curl http://localhost:23000/api/v1/health
-# → {"status":"healthy","version":"1.0.0"}
+# Add to ~/.zshrc for shortcuts
+export ENSEMBLE_HOME="$HOME/Orchestrator/ensemble"
+alias ens='$ENSEMBLE_HOME/scripts/collab-launch.sh "$(pwd)"'
+alias ens-duo='ens --template eng-duo'
+alias ens-build='ens --template eng-build'
+alias ens-fix='ens --template eng-fix'
+alias ens-research='ens --template eng-research'
+
+# Launch a duo team (Tech Lead + Lead Critic)
+ens-duo "Add rate limiting to the API"
+
+# Launch a build team (6 agents)
+ens-build "Implement caching layer with Redis"
+
+# Launch a bug fix team (5 agents)
+ens-fix "Fix the race condition in batch processor"
 ```
 
-### Create your first team
+## Web UI
 
-```bash
-# Via CLI
-npx ensemble status
-
-# Via API — create a team of two agents
-curl -X POST http://localhost:23000/api/ensemble/teams \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "review-team",
-    "description": "Review the authentication module",
-    "agents": [
-      { "program": "claude", "role": "lead" },
-      { "program": "codex", "role": "worker" }
-    ],
-    "workingDirectory": "'$(pwd)'"
-  }'
-
-# Watch the collaboration live
-npx ensemble monitor --latest
-
-# Steer the team
-npx ensemble steer <team-id> "focus on the auth module"
-```
-
-Or use the all-in-one collab script:
-
-```bash
-./scripts/collab-launch.sh "$(pwd)" "Review the authentication module"
-```
-
-## Claude Code: `/collab` command
-
-Ensemble ships with a skill for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Once installed, just type:
+The web UI at `localhost:23000/ui` gives you a full IDE-like experience:
 
 ```
-/collab "Review the auth module for security issues"
+┌──────────┬───────────────────┬────────────────────┬──────────────────┐
+│          │                   │                    │  [researcher]    │
+│  TEAMS   │    TECH LEAD      │    LEAD CRITIC     │  [memory]  ←tabs │
+│          │                   │                    │                  │
+│  ● team-1│    interactive     │    interactive     │  interactive     │
+│  ○ team-2│    terminal        │    terminal        │  terminal        │
+│          │                   │                    │                  │
+├──────────┼───────────────────┴────────────────────┴──────────────────┤
+│ NEW TEAM │                    input bar                              │
+│ [Launch] │  [target ▼]  message...              [Send]   [Disband]  │
+└──────────┴──────────────────────────────────────────────────────────-┘
 ```
 
-Claude spawns a Codex + Claude team, shows their conversation live in your terminal, and presents a summary when done. One-command setup:
+- **Interactive terminals** — Each agent panel is a real terminal (xterm.js + WebSocket). Click to focus, type to interact. Respond to permission prompts directly.
+- **Team sidebar** — List of all teams with status. Click to switch.
+- **Team creation** — Pick a template, set working directory (with native folder picker), describe your task, launch.
+- **Dynamic layout** — 2 agents: side by side. 3+ agents: two primary panels + tabbed right panel for extras.
+- **Scroll history** — Mouse wheel scrolls through agent's terminal history (via tmux mouse mode).
+- **Disband & Resume** — Disband stops all agents. Resume restarts them with `--resume` to continue the conversation.
 
-```bash
-./scripts/setup-claude-code.sh
-```
+## Team Templates
 
-This installs the skill, configures permissions, and verifies prerequisites. See the [full setup guide](https://michelhelsdingen.github.io/ensemble/configuration#claude-code-integration) for details.
+Pre-configured team compositions with role-specific system instructions:
 
-## Supported Agents
-
-The default team is **Claude Code (lead) + Codex (worker)**. This is the tested, production-ready combination.
-
-| Agent | Status | How to use |
+| Template | Agents | Use case |
 |---|---|---|
-| **Claude Code + Codex** | Fully tested | Default — just run `/collab` or `collab-launch.sh` |
-| **Gemini CLI** | Experimental | Add explicitly (see below) |
-| **Aider** | Untested | Add explicitly (see below) |
-| **Any CLI tool** | Via `agents.json` | [Add a custom agent](https://michelhelsdingen.github.io/ensemble/configuration#adding-a-custom-agent) |
+| `eng-duo` | Tech Lead + Lead Critic | Quick tasks, code + adversarial review |
+| `eng-build` | TL + Critic + Architect + Dev + QA + Memory | Standard feature implementation |
+| `eng-fix` | TL + Critic + Dev + QA + Memory | Bug investigation and fix |
+| `eng-research` | TL + Critic + Researcher + Memory | Discovery and competitive analysis |
+| `eng-review` | TL + Critic + Architect + Memory | Code review with critique |
+| `eng-experiment` | TL + Critic + Researcher + Architect + QA + Report Gen + Stats + Memory | Research, benchmark, analyze |
+| `eng-iterate` | TL + Critic + Dev + QA + Report Gen + Stats + Memory | Improve previous results |
+| `eng-full` | All 10 agents | Full lifecycle: research to production |
 
-### Using a different team composition
+### Agent Roster
 
-Three ways to change which agents are on your team:
+| Agent | Runtime | Role |
+|---|---|---|
+| Tech Lead | Claude CLI | Orchestrator — plans, delegates, reviews, decides |
+| Lead Critic | Codex | Adversarial reviewer — different model for cognitive diversity |
+| Researcher | Claude CLI | Discovery, competitive analysis, evidence-backed briefs |
+| Architect | Claude CLI | System design, interfaces, contracts, eval criteria |
+| Developer | Codex | Python implementation |
+| QA Engineer | Codex | Testing, eval harnesses, experiment execution |
+| Report Generator | Claude CLI | Structures experiment output into reports |
+| Stats Interpretive | Claude CLI | Trend analysis, narrative conclusions |
+| Stats Computational | Codex | Statistical tests, significance, charts |
+| Memory Keeper | Codex | Shared knowledge base with temporal decay |
 
-**1. Name them in your `/collab` prompt:**
-```
-/collab "Review the auth module with gemini and claude"
-```
+## Shared Memory
 
-**2. Use the `--agents` flag with `collab-launch.sh`:**
-```bash
-# First agent = lead, rest = workers
-./scripts/collab-launch.sh "$(pwd)" "Security audit" codex,claude,gemini
-```
+Teams maintain a dual-scope knowledge base:
 
-**3. Specify agents in the API call:**
-```bash
-curl -X POST http://localhost:23000/api/ensemble/teams \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "my-team",
-    "description": "Security audit",
-    "agents": [
-      { "program": "codex", "role": "lead" },
-      { "program": "claude", "role": "worker" },
-      { "program": "gemini", "role": "worker" }
-    ],
-    "workingDirectory": "'$(pwd)'"
-  }'
-```
+- **Team scope** (`/tmp/ensemble/<team-id>/working-memory/`) — session scratchpad, dies when team disbands
+- **Project scope** (`.team-memory/`) — durable knowledge with 90-day temporal decay
 
-> **Note on Gemini:** Gemini CLI can join teams and send messages, but is experimental. It may stop responding due to free-tier rate limits or internal agent delegation issues in Gemini's TUI. For best results, configure a paid API key via `gemini /auth`.
+Categories: mistakes, preferences, decisions, anti-patterns, learnings. Entries include evidence, tags, and automatic relevance scoring.
 
 ## How It Works
 
-1. **Create a team** — Define agents and their task via API or CLI
-2. **Agents spawn** — Each agent gets a tmux session with the task prompt
-3. **Communication** — Agents use `team-say`/`team-read` scripts to exchange messages
-4. **Monitor** — Watch the collaboration unfold in real-time via the TUI monitor
-5. **Auto-disband** — When agents signal completion, results are summarized and persisted
+1. **Create a team** — Pick a template or define agents via API/CLI/Web UI
+2. **Agents spawn** — Each gets a tmux session with role-specific system instructions
+3. **Communication** — Agents use `team-say`/`team-read` to exchange messages
+4. **Monitor** — Watch via Web UI (interactive terminals) or TUI monitor
+5. **Critique loop** — Lead Critic reviews artifacts, returns STOP/PAUSE/PROCEED verdicts
+6. **Resume** — Disband and resume later, picking up the conversation
+
+## TUI Monitor
+
+For terminal-only usage:
+
+```bash
+npx ensemble monitor --latest
+```
+
+Keybindings:
+
+| Key | Action |
+|---|---|
+| `s` | Steer team (send message) |
+| `1-N` | Steer specific agent |
+| `!` | Raw proxy mode — forward keystrokes to agent's tmux session |
+| `j/k` | Scroll message feed |
+| `d` | Disband team |
+| `q` | Quit monitor |
+
+Raw proxy mode shows a live preview of the agent's terminal. Double-Esc to exit.
 
 ## Configuration
 
-Copy `.env.example` to `.env` and adjust as needed. Key variables:
+Copy `.env.example` to `.env` and adjust as needed:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -152,8 +176,34 @@ Copy `.env.example` to `.env` and adjust as needed. Key variables:
 | `ENSEMBLE_URL` | `http://localhost:23000` | CLI target URL |
 | `ENSEMBLE_DATA_DIR` | `~/.ensemble` | Data directory |
 | `ENSEMBLE_CORS_ORIGIN` | localhost only | Allowed CORS origins |
+| `ENSEMBLE_WATCHDOG_NUDGE_MS` | `900000` (15min) | Idle nudge threshold |
+| `ENSEMBLE_WATCHDOG_STALL_MS` | `1200000` (20min) | Stall detection threshold |
 
-See [full configuration docs](https://michelhelsdingen.github.io/ensemble/configuration) for all options including Telegram notifications, multi-host setup, and agent customization.
+## CLI Aliases
+
+Add to `~/.zshrc`:
+
+```bash
+export ENSEMBLE_HOME="$HOME/Orchestrator/ensemble"
+
+# Launch teams
+alias ens='$ENSEMBLE_HOME/scripts/collab-launch.sh "$(pwd)"'
+alias ens-duo='ens --template eng-duo'
+alias ens-build='ens --template eng-build'
+alias ens-fix='ens --template eng-fix'
+alias ens-research='ens --template eng-research'
+alias ens-experiment='ens --template eng-experiment'
+alias ens-review='ens --template eng-review'
+alias ens-iterate='ens --template eng-iterate'
+alias ens-full='ens --template eng-full'
+
+# Management
+alias ens-monitor='npx --prefix $ENSEMBLE_HOME ensemble monitor'
+alias ens-teams='npx --prefix $ENSEMBLE_HOME ensemble teams'
+alias ens-steer='npx --prefix $ENSEMBLE_HOME ensemble steer'
+alias ens-status='$ENSEMBLE_HOME/scripts/collab-status.sh'
+alias ens-replay='$ENSEMBLE_HOME/scripts/collab-replay.sh'
+```
 
 ## Documentation
 
